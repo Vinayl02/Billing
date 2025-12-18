@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>WhatsApp Billing</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+body { font-family: Arial; margin: 10px; }
+h3 { margin: 5px 0; }
+
+button {
+  padding: 8px 10px;
+  margin: 3px;
+  border: none;
+  border-radius: 5px;
+  font-size: 13px;
+}
+
+.btn { background: #25D366; color: #fff; }
+.btn-pay { background: #5cb85c; color: #fff; }
+.btn-qr { background: #0275d8; color: #fff; }
+.btn-print { background: #5bc0de; color: #fff; }
+.btn-del { background: #d9534f; color: #fff; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #ccc; padding: 6px; }
+input, select { width: 100%; padding: 6px; box-sizing: border-box; }
+
+#loginBox {
+  max-width: 300px;
+  margin: 100px auto;
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  th, td { font-size: 12px; }
+}
+</style>
+</head>
+
+<body>
+
+<!-- LOGIN -->
+<div id="loginBox">
+  <h3>🔐 Login</h3>
+  <input type="password" id="pwd" placeholder="Enter password">
+  <br><br>
+  <button onclick="login()">Login</button>
+</div>
+
+<!-- APP -->
+<div id="app" style="display:none">
+
+<h3>📨 WhatsApp Newspaper Billing</h3>
+
+<button onclick="addRow()">➕ Add Row</button>
+<button onclick="sendAll()">📤 Send All Pending</button>
+<button onclick="archiveMonth()">📦 Archive Month</button>
+
+<select id="history" onchange="loadMonth(this.value)">
+  <option value="">📅 Load Month</option>
+</select>
+
+<br><br>
+
+<table id="tbl">
+<thead>
+<tr>
+  <th>Name</th>
+  <th>Mobile</th>
+  <th>Amount</th>
+  <th>Balance</th>
+  <th>Month</th>
+  <th>Status</th>
+  <th>Actions</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+
+</div>
+
+<script>
+/* ================= CONFIG ================= */
+const UPI_ID = "9036635059@ybl";
+const PAYEE = "Vinay L";
+const PASS_KEY = "billing_password";
+const DATA_KEY = "billing_data";
+
+/* ================= LOGIN ================= */
+function login() {
+  const p = pwd.value;
+  if (!localStorage.getItem(PASS_KEY)) {
+    localStorage.setItem(PASS_KEY, p);
+    alert("Password set");
+  } else if (localStorage.getItem(PASS_KEY) !== p) {
+    return alert("Wrong password");
+  }
+  loginBox.style.display = "none";
+  app.style.display = "block";
+  loadData();
+  refreshHistory();
+}
+
+/* ================= STORAGE ================= */
+function saveData() {
+  const rows = [];
+  document.querySelectorAll("#tbl tbody tr").forEach(r => {
+    const c = r.querySelectorAll("input, select");
+    rows.push([...c].map(x => x.value));
+  });
+  localStorage.setItem(DATA_KEY, JSON.stringify(rows));
+}
+
+function loadData() {
+  const data = JSON.parse(localStorage.getItem(DATA_KEY) || "[]");
+  if (data.length === 0) addRow();
+  else data.forEach(r => addRow(r));
+}
+
+/* ================= TABLE ================= */
+function addRow(v = ["", "", "0", "0", "December", "Pending"]) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><input value="${v[0]}"></td>
+    <td><input value="${v[1]}"></td>
+    <td><input value="${v[2]}"></td>
+    <td><input value="${v[3]}"></td>
+    <td><input value="${v[4]}"></td>
+    <td>
+      <select>
+        <option ${v[5]=="Pending"?"selected":""}>Pending</option>
+        <option ${v[5]=="Paid"?"selected":""}>Paid</option>
+      </select>
+    </td>
+    <td>
+      <button class="btn" onclick="send(this)">Send</button>
+      <button class="btn-pay" onclick="payUPI(this)">💳 Pay</button>
+      <button class="btn-qr" onclick="showQR(this)">QR</button>
+      <button class="btn-print" onclick="printBill(this)">🖨️</button>
+      <button class="btn-del" onclick="delRow(this)">✖</button>
+    </td>`;
+  tr.querySelectorAll("input, select").forEach(e => e.oninput = saveData);
+  document.querySelector("#tbl tbody").appendChild(tr);
+  saveData();
+}
+
+function delRow(btn) {
+  btn.closest("tr").remove();
+  saveData();
+}
+
+/* ================= WHATSAPP ================= */
+/* NOTE: Message contains NO UPI deep link */
+function buildMessage(r) {
+  const c = r.querySelectorAll("input, select");
+  const name = c[0].value;
+  const amt = +c[2].value;
+  const bal = +c[3].value;
+  const month = c[4].value;
+  const total = amt + bal;
+
+  let msg = `Hello ${name}, This is a gentle reminder that your ${month} Month Newspaper Bill Amount is Rs ${total}`;
+  if (bal > 0) msg += ` (Including Previous Pending Balance of Rs ${bal})`;
+  msg += `. Kindly pay via UPI ID ${UPI_ID} or scan the QR code. Thank you.`;
+
+  return encodeURIComponent(msg);
+}
+
+function send(btn) {
+  const r = btn.closest("tr");
+  const mobile = r.querySelectorAll("input")[1].value;
+  if (!mobile) return alert("Mobile missing");
+
+  window.open(
+    `https://api.whatsapp.com/send?phone=91${mobile}&text=${buildMessage(r)}`,
+    "_blank"
+  );
+}
+
+/* ===== ONE-BY-ONE SEND ALL (WhatsApp compliant) ===== */
+let sendQueue = [];
+let sendIndex = 0;
+
+function sendAll() {
+  sendQueue = [];
+  sendIndex = 0;
+
+  document.querySelectorAll("#tbl tbody tr").forEach(r => {
+    if (r.querySelector("select").value === "Pending")
+      sendQueue.push(r);
+  });
+
+  if (sendQueue.length === 0)
+    return alert("No pending customers");
+
+  alert("WhatsApp will open one by one.\nClick SEND each time.");
+  sendNext();
+}
+
+function sendNext() {
+  if (sendIndex >= sendQueue.length) return;
+
+  const r = sendQueue[sendIndex++];
+  send(r.querySelector(".btn"));
+  setTimeout(sendNext, 3000);
+}
+
+/* ================= UPI PAYMENT ================= */
+/* This opens APP CHOOSER: PhonePe / GPay / Paytm / BHIM */
+function payUPI(btn) {
+  const r = btn.closest("tr");
+  const amt = +r.querySelectorAll("input")[2].value +
+              +r.querySelectorAll("input")[3].value;
+
+  const upi = `upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(PAYEE)}&am=${amt}&cu=INR`;
+  window.location.href = upi;
+}
+
+/* ================= QR ================= */
+function showQR(btn) {
+  const r = btn.closest("tr");
+  const amt = +r.querySelectorAll("input")[2].value +
+              +r.querySelectorAll("input")[3].value;
+
+  const upi = `upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(PAYEE)}&am=${amt}&cu=INR`;
+  const qr = `https://chart.googleapis.com/chart?chs=300x300&cht=qr&chl=${encodeURIComponent(upi)}`;
+  window.open(qr, "_blank");
+}
+
+/* ================= PRINT ================= */
+function printBill(btn) {
+  const r = btn.closest("tr");
+  const c = r.querySelectorAll("input, select");
+  const total = +c[2].value + +c[3].value;
+
+  const w = window.open("", "", "width=600,height=700");
+  w.document.write(`
+    <h2>Newspaper Bill</h2>
+    <p><b>Name:</b> ${c[0].value}</p>
+    <p><b>Mobile:</b> ${c[1].value}</p>
+    <p><b>Month:</b> ${c[4].value}</p>
+    <hr>
+    <p>Current Bill: Rs ${c[2].value}</p>
+    <p>Previous Balance: Rs ${c[3].value}</p>
+    <h3>Total Payable: Rs ${total}</h3>
+    <hr>
+    <p>UPI ID: ${UPI_ID}</p>
+    <p>${PAYEE}</p>
+  `);
+  w.print();
+}
+
+/* ================= HISTORY ================= */
+function archiveMonth() {
+  const m = prompt("Enter month name (e.g. Jan 2025)");
+  if (!m) return;
+  localStorage.setItem("month_" + m, localStorage.getItem(DATA_KEY));
+  alert("Saved " + m);
+  refreshHistory();
+}
+
+function refreshHistory() {
+  const sel = document.getElementById("history");
+  sel.innerHTML = `<option value="">📅 Load Month</option>`;
+  Object.keys(localStorage)
+    .filter(k => k.startsWith("month_"))
+    .forEach(k => {
+      const o = document.createElement("option");
+      o.value = k;
+      o.text = k.replace("month_", "");
+      sel.appendChild(o);
+    });
+}
+
+function loadMonth(k) {
+  if (!k) return;
+  localStorage.setItem(DATA_KEY, localStorage.getItem(k));
+  location.reload();
+}
+
+/* ================= INIT ================= */
+if (localStorage.getItem(PASS_KEY)) {
+  loginBox.style.display = "block";
+}
+</script>
+
+</body>
+</html>
